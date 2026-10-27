@@ -1,0 +1,21 @@
+bundle:
+  name: reinsurance-data-vault
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    default: reinsurance
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: reinsurance_dev
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
