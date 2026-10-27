@@ -1,0 +1,12 @@
+resources:
+  pipelines:
+    reinsurance_pipeline:
+      name: reinsurance-staging
+      catalog: ${var.catalog}
+      schema: staging
+      serverless: true
+      libraries:
+        - glob:
+            include: ../src/pipeline/**
+      configuration:
+        catalog: ${var.catalog}
