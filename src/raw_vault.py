@@ -1,6 +1,3 @@
-"""Metadata-driven loader for the raw vault: every table is insert-only."""
-
-# table: (key columns, attribute columns, staging sources)
 HUBS = {
     "hub_cedent": (["hk_cedent"], ["cedent_code"], ["stg_cedents", "stg_treaties"]),
     "hub_treaty": (["hk_treaty"], ["treaty_number"], ["stg_treaties", "stg_premiums", "stg_claims"]),
@@ -11,7 +8,6 @@ LINKS = {
     "link_claim_treaty": (["hk_claim_treaty"], ["hk_claim", "hk_treaty"], ["stg_claims"]),
     "nhl_treaty_premium": (["hk_treaty", "period"], ["gross_premium", "ceded_premium"], ["stg_premiums"]),
 }
-# table: (parent hash key, hashdiff, attribute columns, staging source)
 SATELLITES = {
     "sat_cedent": ("hk_cedent", "hd_cedent", ["cedent_name", "country", "rating"], "stg_cedents"),
     "sat_treaty_terms": ("hk_treaty", "hd_treaty", [
@@ -22,7 +18,6 @@ SATELLITES = {
 
 
 def insert_new_keys(stg, rv, table, keys, cols, sources):
-    """Hubs and links: insert each key once, with the first time it was seen."""
     select = ", ".join(keys + cols + ["load_date", "record_source"])
     union = " UNION ALL ".join(f"SELECT {select} FROM {stg}.{s}" for s in sources)
     on = " AND ".join(f"s.{k} = t.{k}" for k in keys)
@@ -39,7 +34,6 @@ WHERE s.rn = 1""",
 
 
 def insert_changes(stg, rv, table, parent, hd, cols, source):
-    """Satellites: insert a row only when the hashdiff differs from the previous version of that key."""
     select = ", ".join([parent, hd] + cols + ["load_date", "record_source"])
     return [
         f"CREATE TABLE IF NOT EXISTS {rv}.{table} AS SELECT {select} FROM {stg}.{source} LIMIT 0",
