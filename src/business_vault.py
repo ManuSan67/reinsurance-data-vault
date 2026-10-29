@@ -4,6 +4,8 @@ PITS = {
     "pit_claim": ("hk_claim", "sat_claim_status"),
 }
 
+CAUSES = ["incendio", "inundación", "sismo", "choque", "robo", "avería de carga"]
+
 CEDED = """CREATE OR REPLACE TABLE {bv}.claim_ceded AS
 WITH claims AS (
   SELECT pc.hk_claim, l.hk_treaty, pc.snapshot_date, c.loss_date, c.status,
@@ -20,6 +22,15 @@ SELECT c.*, t.treaty_type,
 FROM claims c
 LEFT JOIN {bv}.pit_treaty pt ON pt.hk_treaty = c.hk_treaty AND pt.snapshot_date = trunc(c.loss_date, 'MM')
 LEFT JOIN {rv}.sat_treaty_terms t ON t.hk_treaty = pt.hk_treaty AND t.load_date = pt.sat_treaty_terms_ldts"""
+
+CAUSE_TABLE = """CREATE TABLE IF NOT EXISTS {bv}.claim_cause (
+  hk_claim STRING, hd_claim_note STRING, note STRING, predicted_cause STRING, classified_at TIMESTAMP)"""
+
+CAUSE_LOAD = """INSERT INTO {bv}.claim_cause
+SELECT n.hk_claim, n.hd_claim_note, n.note,
+       ai_classify(n.note, ARRAY({causes})), current_timestamp()
+FROM {rv}.sat_claim_note n
+LEFT ANTI JOIN {bv}.claim_cause c ON c.hk_claim = n.hk_claim AND c.hd_claim_note = n.hd_claim_note"""
 
 
 def pit(rv, bv, table, parent, sat):
@@ -40,3 +51,5 @@ def statements(rv, bv):
     for table, spec in PITS.items():
         yield pit(rv, bv, table, *spec)
     yield CEDED.format(rv=rv, bv=bv)
+    yield CAUSE_TABLE.format(bv=bv)
+    yield CAUSE_LOAD.format(rv=rv, bv=bv, causes=", ".join(f"'{c}'" for c in CAUSES))
