@@ -14,6 +14,8 @@ SATELLITES = {
         "line_of_business", "treaty_type", "underwriting_year", "inception_date", "expiry_date",
         "currency", "ceded_share", "retention", "limit_amount"], "stg_treaties"),
     "sat_claim_status": ("hk_claim", "hd_claim", ["loss_date", "paid_to_date", "outstanding", "status"], "stg_claims"),
+    "sat_claim_note": ("hk_claim", "hd_claim_note", ["note"], "stg_claim_notes"),
+    "sat_claim_cause_review": ("hk_claim", "hd_claim_cause", ["cause"], "stg_claim_audit"),
 }
 
 
