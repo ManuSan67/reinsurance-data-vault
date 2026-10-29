@@ -42,3 +42,9 @@ resources:
             notebook_path: ../notebooks/05_legacy_reconciliation.ipynb
             base_parameters:
               catalog: ${var.catalog}
+
+        - task_key: treaty_rag
+          notebook_task:
+            notebook_path: ../notebooks/06_treaty_rag.ipynb
+            base_parameters:
+              catalog: ${var.catalog}

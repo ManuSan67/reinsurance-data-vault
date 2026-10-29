@@ -2,24 +2,28 @@
 
 [![ci](https://github.com/ManuSan67/reinsurance-data-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/ManuSan67/reinsurance-data-vault/actions/workflows/ci.yml)
 
-Data Vault 2.0 platform for a reinsurer on Databricks. Monthly bordereaux from three cedents land as raw files, go through a raw vault and a business vault, and end in a star schema with loss ratios per treaty. A legacy stored procedure that computed ceded claims is rewritten in PySpark and reconciled claim by claim against the new model.
+Data Vault 2.0 platform for a reinsurer on Databricks. Monthly bordereaux from three cedents land as raw files, go through a raw vault and a business vault, and end in a star schema with loss ratios per treaty. A legacy stored procedure that computed ceded claims is rewritten in PySpark and reconciled claim by claim against the new model. On top of the governed data sit three AI features: claim cause classification, a Genie space for questions in plain Spanish, and retrieval over treaty clauses.
 
-Built on Databricks Free Edition with Unity Catalog, Lakeflow Declarative Pipelines, Asset Bundles and GitHub Actions. All data is synthetic.
+Built on Databricks Free Edition with Unity Catalog, Lakeflow Declarative Pipelines, Asset Bundles, AI Functions, Genie and GitHub Actions. All data is synthetic.
 
 ## Architecture
 
-```mermaid
+~~~mermaid
 flowchart LR
     A[Bordereaux<br/>JSON and CSV] --> B[staging<br/>Auto Loader pipeline]
+    N[Adjuster notes<br/>cause review] --> B
     B --> C[raw_vault<br/>hubs, links, satellites]
-    C --> D[business_vault<br/>PITs, ceded amounts]
+    C --> D[business_vault<br/>PITs, ceded amounts<br/>ai_classify causes]
     D --> E[mart<br/>star schema, loss ratio]
+    E --> H[Genie space]
     B --> F[legacy<br/>stored procedure rewrite]
     F --> G[reconciliation]
     D --> G
-```
+    W[Treaty clauses] --> K[knowledge<br/>embeddings in Delta]
+    K --> R[hybrid search + RAG]
+~~~
 
-One job runs the whole flow: staging, raw_vault, business_vault, then mart and reconciliation in parallel. The same code runs in dev (`reinsurance_dev`) and prod (`reinsurance`); the catalog is a bundle variable.
+One job runs the whole flow: staging, raw_vault, business_vault, then mart and reconciliation in parallel, plus the treaty clauses on their own branch. The same code runs in dev (`reinsurance_dev`) and prod (`reinsurance`); the catalog is a bundle variable.
 
 ## The data
 
@@ -28,6 +32,7 @@ One job runs the whole flow: staging, raw_vault, business_vault, then mart and r
 - Property treaties are excess of loss (retention 1M, limit 4M). Motor and marine are quota share, ceding 30% to 50%.
 - Claims arrive in three different layouts: a CSV with Spanish column names, a JSON file with ISO dates, and a CSV with yyyymmdd dates and O/C status codes.
 - The feed has the problems a real one has: a mid-year endorsement (T-CED01-MOTOR-2024 goes from 50% to 35% in July 2024), a cedent rating downgrade, rows sent twice in the same file, and a claim booked against a treaty that was never written.
+- Every claim comes with a free-text adjuster note in Spanish, and one claim in six has its cause reviewed by hand (100 claims), which is the ground truth for the classifier.
 
 The generator is deterministic, so every number below can be reproduced.
 
@@ -36,10 +41,11 @@ The generator is deterministic, so every number below can be reproduced.
 | Layer | What it does |
 |---|---|
 | staging | Auto Loader reads each source incrementally and maps the three claim layouts to one table. Hash keys and hashdiffs are computed here. Data quality rules flag rows but drop nothing. |
-| raw_vault | 3 hubs, 2 links, a non-historized link for premiums and 3 satellites. A metadata-driven loader builds them from one config line per table and two generic functions. Insert-only and idempotent. |
-| business_vault | Monthly point-in-time tables, and the ceded amount per claim using the treaty terms in force in the month of loss. |
-| mart | `dim_cedent`, `dim_treaty`, `fact_premium`, `fact_claim_month` and `loss_ratio`. |
+| raw_vault | 3 hubs, 2 links, a non-historized link for premiums and 5 satellites. A metadata-driven loader builds them from one config line per table and two generic functions. Insert-only and idempotent. |
+| business_vault | Monthly point-in-time tables, the ceded amount per claim using the treaty terms in force in the month of loss, and the claim cause predicted with `ai_classify`. |
+| mart | `dim_cedent`, `dim_treaty`, `fact_premium`, `fact_claim_month`, `fact_claim` and `loss_ratio`. |
 | legacy | PySpark rewrite of the old stored procedure and its reconciliation. |
+| knowledge | 109 treaty clauses with their embeddings, for retrieval. |
 
 ## Results
 
@@ -51,7 +57,9 @@ Row counts in prod, identical to dev:
 | hub_treaty | 19 (18 treaties plus the unknown one) |
 | sat_treaty_terms | 19 (18 treaties plus the endorsement) |
 | sat_claim_status | 3,718 |
+| sat_claim_note | 606 |
 | pit_claim | 7,298 |
+| fact_claim | 605 (the claim without a treaty stays out) |
 | loss_ratio | 18 |
 
 Running the whole job a second time changes nothing.
@@ -86,7 +94,45 @@ Three defects in the procedure explain every difference:
 2. Its `MAX(load_date)` filter keeps rows the cedent sent twice, and the cursor counts them twice.
 3. `IF @@ROWCOUNT > 0` skips claims without a treaty and leaves no trace of them.
 
+## AI on the lakehouse
+
+Each feature was measured against a fixed set of questions or a hand-reviewed sample, the same way the data layers are reconciled.
+
+**Claim cause classification.** `ai_classify` reads the adjuster note and picks one of six causes (fire, flood, earthquake, collision, theft, cargo damage). Against the 100 hand-reviewed claims it gets 99 right. The one miss is cargo that arrived "with dents" at a port, read as a collision. The classification is incremental: a note is sent to the model only when it is new or its hashdiff changed, so a monthly run does not pay for the 606 notes again.
+
+**Genie.** A Genie space over the mart, with business instructions (loss ratios are summed incurred over summed premium, never an average of ratios; amounts are gross unless asked otherwise) and two example queries. A benchmark of 10 questions with their correct SQL scored 8/10 on the first run. Both misses returned the right figures as a full ranked list when the question asked for one item; one instruction fixed one of them, for 9/10. The remaining one was left as is rather than tuning instructions to a single test question.
+
+**Retrieval over treaty clauses.** 109 clauses from the 18 treaties are embedded with `databricks-gte-large-en` and stored in Delta; cosine similarity is computed in SQL, because Free Edition allows a single vector search endpoint. Six test questions, each with the clause it should find:
+
+| Search | Correct clause in top results |
+|---|---|
+| Vector only | 4/6 |
+| Vector + treaty metadata (cedent, line, year) | 5/6 |
+| Vector + metadata + keyword match | 6/6, all ranked first |
+
+The embedding model is trained mostly on English, so it mixed up lines of business and missed the word for retention in Spanish; metadata pins the treaty and keyword matching picks the clause. Answers come from `databricks-meta-llama-3-3-70b-instruct`, which is told to use only the retrieved clauses and to cite treaty and clause. Asked about something that is not in any treaty, it answers that it cannot find it.
+
+**Governance.** `governance/grants.sql` gives the `risk_team` group read access to the mart and the clauses only. Genie runs queries with the permissions of the person asking, so the same Unity Catalog grants apply to it.
+
 ## Repository layout
+
+~~~
+databricks.yml               bundle with dev and prod targets
+resources/                   staging pipeline and monthly job
+src/generator.py             synthetic bordereaux, adjuster notes and cause review
+src/pipeline/staging.py      staging pipeline
+src/raw_vault.py             raw vault loader
+src/business_vault.py        PITs, ceded amounts and AI cause classification
+src/mart.py                  star schema and loss ratio
+src/legacy_ceded.py          PySpark rewrite of the stored procedure
+src/wordings.py              treaty clauses
+src/rag.py                   hybrid search and answers over the clauses
+legacy/                      original stored procedure
+governance/grants.sql        Unity Catalog grants for the risk team
+notebooks/                   setup, data generation and one notebook per layer
+tests/                       generator, clauses and ceded amount tests
+.github/workflows/ci.yml     tests on pull requests, deploy to prod on merge
+~~~
 
 ## Running it
 
