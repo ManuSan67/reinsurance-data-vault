@@ -25,6 +25,62 @@ ENDORSEMENT = ("T-CED01-MOTOR-2024", 6, 0.35)  # treaty, month index, new ceded 
 ORPHAN_CLAIM = ("CED01", 4, "T-CED01-AVIATION-2024")  # claim sent against a treaty we never wrote
 DUPLICATE_RATE = 0.02  # CED03 re-sends some rows in the same file
 
+CAUSES = {
+    "PROPERTY": [("incendio", 0.40), ("inundación", 0.30), ("sismo", 0.15), ("robo", 0.15)],
+    "MOTOR": [("choque", 0.70), ("robo", 0.25), ("inundación", 0.05)],
+    "MARINE": [("avería de carga", 0.70), ("robo", 0.15), ("incendio", 0.15)],
+    "AVIATION": [("incendio", 1.0)],
+}
+PLACES = {
+    "PROPERTY": ["la bodega de Querétaro", "la planta de Monterrey", "las oficinas centrales",
+                 "el centro de distribución de Puebla"],
+    "MOTOR": ["el estacionamiento de un centro comercial", "la carretera a Toluca", "el periférico norte",
+              "un cruce de avenida Insurgentes"],
+    "MARINE": ["el puerto de Manzanillo", "el buque con destino a Cartagena", "el muelle de Veracruz",
+               "la terminal de Lázaro Cárdenas"],
+    "AVIATION": ["el hangar 3"],
+}
+GOODS = {
+    "PROPERTY": ["el inventario", "la maquinaria", "el equipo de cómputo", "la materia prima"],
+    "MOTOR": ["el vehículo asegurado", "el tractocamión", "la camioneta de reparto"],
+    "MARINE": ["los contenedores de café", "los equipos electrónicos", "los rollos de acero",
+               "los productos refrigerados"],
+    "AVIATION": ["la aeronave"],
+}
+NOTES = {
+    "incendio": [
+        "Se reporta incendio en {place}; el fuego empezó por un cortocircuito y dañó {goods}.",
+        "Las llamas alcanzaron {goods} en {place} antes de que llegaran los bomberos.",
+        "Conato de fuego en {place}; hay daños por humo y calor en {goods}.",
+    ],
+    "inundación": [
+        "Lluvias intensas inundaron {place} y dañaron {goods}.",
+        "El desbordamiento de un río cercano dejó {place} bajo el agua; {goods} con daño total.",
+        "Una tubería rota inundó {place} durante el fin de semana y afectó {goods}.",
+    ],
+    "sismo": [
+        "El sismo provocó grietas estructurales en {place} y {goods} sufrió daños.",
+        "Tras el temblor colapsaron los racks en {place}; hay daño en {goods}.",
+    ],
+    "choque": [
+        "Impacto por alcance en {place}; daños traseros en {goods}.",
+        "Colisión lateral con otro vehículo en {place}; daños en {goods}.",
+        "El conductor perdió el control en {place} y {goods} terminó contra el muro de contención.",
+    ],
+    "robo": [
+        "Se robaron {goods} en {place} durante la noche; las cerraduras fueron forzadas.",
+        "Asalto con violencia en {place}; se llevaron {goods}.",
+        "Faltante detectado al hacer inventario en {place}: {goods}. Ya hay denuncia.",
+    ],
+    "avería de carga": [
+        "Al descargar en {place}, {goods} presentaban golpes y abolladuras.",
+        "Una falla en la refrigeración durante el trayecto echó a perder {goods}; se detectó en {place}.",
+        "Por mal estibado, {goods} se desplazaron con el oleaje; daño detectado en {place}.",
+        "Entró agua de mar a la bodega del barco y mojó {goods}; se detectó en {place}.",
+    ],
+}
+AUDIT_EVERY = 6  # one claim in six is reviewed by hand
+
 
 def month_of(i):
     y, m = divmod(START_MONTH - 1 + i, 12)
@@ -72,9 +128,17 @@ def ceded_premium(t, gross):
     return round(XL_RATE * XL_LIMIT / 12, 2)
 
 
-class Book:
-    """Replays the history month by month, so every run produces the same files."""
+def claim_note(claim, seed):
+    number = int(claim["claim_number"][-6:])
+    rng = random.Random(seed * 104_729 + number)
+    line = claim["treaty_number"].split("-")[2]
+    causes, weights = zip(*CAUSES[line])
+    cause = rng.choices(causes, weights)[0]
+    note = rng.choice(NOTES[cause]).format(place=rng.choice(PLACES[line]), goods=rng.choice(GOODS[line]))
+    return cause, note, number % AUDIT_EVERY == 0
 
+
+class Book:
     def __init__(self, seed):
         self.seed = seed
         self.treaties = {}
@@ -123,6 +187,15 @@ class Book:
             self._develop(rng, c)
             out["claims"][c["cedent_code"]].append({k: c[k] for k in (
                 "claim_number", "treaty_number", "loss_date", "paid_to_date", "outstanding", "status")})
+
+        out["notes"], out["audit"] = [], []
+        for c in self.claims.values():
+            if c["reported"] != period:
+                continue
+            cause, note, audited = claim_note(c, self.seed)
+            out["notes"].append({"claim_number": c["claim_number"], "note": note})
+            if audited:
+                out["audit"].append({"claim_number": c["claim_number"], "cause": cause})
         return out
 
     def _open_claim(self, rng, treaty_number, cedent, period, median, sigma):
@@ -151,7 +224,6 @@ class Book:
         c["outstanding"] = round(max(0.0, c["ultimate"] * rng.uniform(0.9, 1.15) - c["paid_to_date"]), 2)
 
 
-# Each cedent sends its claims bordereau in its own layout.
 def _ced01(rows):
     status = {"OPEN": "ABIERTO", "CLOSED": "CERRADO"}
     header = ["numero_siniestro", "numero_contrato", "fecha_siniestro", "pagado_acumulado", "reserva", "estatus"]
@@ -168,8 +240,8 @@ def _ced03(rows, rng):
 
 def _write_json(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.writelines(json.dumps(r) + "\n" for r in rows)
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
 
 
 def _write_csv(path, header, rows):
@@ -180,14 +252,18 @@ def _write_csv(path, header, rows):
         w.writerows(rows)
 
 
+def _write_notes(root, ym, out):
+    _write_json(f"{root}/claim_notes/claim_notes_{ym}.json", out["notes"])
+    if out["audit"]:
+        _write_json(f"{root}/claim_audit/claim_causes_{ym}.json", out["audit"])
+
+
 def next_month(root):
-    """Index of the first month not yet written (0 if the landing folder is empty)."""
     folder = os.path.join(root, "premiums")
     return len(os.listdir(folder)) if os.path.isdir(folder) else 0
 
 
 def write_months(root, n_months, seed=7):
-    """Write the next `n_months` monthly bordereaux after whatever is already in `root`."""
     first = next_month(root)
     book = Book(seed)
     for i in range(first + n_months):
@@ -203,4 +279,11 @@ def write_months(root, n_months, seed=7):
         _write_csv(f"{root}/claims/CED01/claims_{ym}.csv", *_ced01(out["claims"]["CED01"]))
         _write_json(f"{root}/claims/CED02/claims_{ym}.json", out["claims"]["CED02"])
         _write_csv(f"{root}/claims/CED03/claims_{ym}.csv", *_ced03(out["claims"]["CED03"], random.Random(seed * 13 + i)))
+        _write_notes(root, ym, out)
     return first, first + n_months - 1
+
+
+def write_notes(root, seed=7):
+    book = Book(seed)
+    for i in range(next_month(root)):
+        _write_notes(root, month_of(i).isoformat()[:7], book.step(i))

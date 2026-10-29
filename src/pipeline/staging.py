@@ -135,3 +135,21 @@ def claims_ced03():
         "_metadata",
     )
     return claims(df, "CED03")
+
+
+@dp.table(name="staging.stg_claim_notes", comment="Adjuster notes in free text, one per claim.")
+def stg_claim_notes():
+    return (
+        audit(files("claim_notes", "json"), "adjuster.claim_notes")
+        .withColumn("hk_claim", hash_key("claim_number"))
+        .withColumn("hd_claim_note", hash_diff("note"))
+    )
+
+
+@dp.table(name="staging.stg_claim_audit", comment="Claim causes reviewed by hand on a sample of claims.")
+def stg_claim_audit():
+    return (
+        audit(files("claim_audit", "json"), "claims_team.cause_review")
+        .withColumn("hk_claim", hash_key("claim_number"))
+        .withColumn("hd_claim_cause", hash_diff("cause"))
+    )

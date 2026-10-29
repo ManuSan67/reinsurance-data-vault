@@ -23,6 +23,23 @@ SELECT hk_treaty, snapshot_date AS month, count(*) AS claims,
 FROM {bv}.claim_ceded
 WHERE treaty_type IS NOT NULL
 GROUP BY hk_treaty, snapshot_date""",
+    "fact_claim": """
+WITH latest AS (
+  SELECT * FROM {bv}.claim_ceded
+  WHERE snapshot_date = (SELECT max(snapshot_date) FROM {bv}.claim_ceded)
+),
+cause AS (
+  SELECT hk_claim, predicted_cause
+  FROM {bv}.claim_cause
+  QUALIFY row_number() OVER (PARTITION BY hk_claim ORDER BY classified_at DESC) = 1
+)
+SELECT h.claim_number, l.hk_treaty, l.loss_date, year(l.loss_date) AS loss_year, l.status,
+       coalesce(c.predicted_cause, 'sin clasificar') AS cause,
+       l.gross_incurred, l.ceded_incurred
+FROM latest l
+JOIN {rv}.hub_claim h ON h.hk_claim = l.hk_claim
+JOIN {mart}.dim_treaty t ON t.hk_treaty = l.hk_treaty
+LEFT JOIN cause c ON c.hk_claim = l.hk_claim""",
     "loss_ratio": """
 WITH premium AS (
   SELECT hk_treaty, sum(gross_premium) AS gross_premium, sum(ceded_premium) AS ceded_premium
