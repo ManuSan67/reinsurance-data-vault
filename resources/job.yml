@@ -1,0 +1,45 @@
+resources:
+  jobs:
+    bank_risk_monthly:
+      name: bank_risk_monthly_${bundle.target}
+      schedule:
+        quartz_cron_expression: "0 0 6 1 * ?"
+        timezone_id: America/Mexico_City
+        pause_status: PAUSED
+      tasks:
+        - task_key: generate
+          notebook_task:
+            notebook_path: ../notebooks/01_generate.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: security_functions
+          notebook_task:
+            notebook_path: ../notebooks/03_governance.py
+            base_parameters:
+              catalog: ${var.catalog}
+              step: functions
+
+        - task_key: etl
+          depends_on:
+            - task_key: generate
+            - task_key: security_functions
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.bank_risk_etl.id}
+
+        - task_key: metric_views
+          depends_on:
+            - task_key: etl
+          notebook_task:
+            notebook_path: ../notebooks/02_metric_views.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: grants
+          depends_on:
+            - task_key: metric_views
+          notebook_task:
+            notebook_path: ../notebooks/03_governance.py
+            base_parameters:
+              catalog: ${var.catalog}
+              step: grants

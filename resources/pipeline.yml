@@ -1,0 +1,12 @@
+resources:
+  pipelines:
+    bank_risk_etl:
+      name: bank_risk_etl_${bundle.target}
+      catalog: ${var.catalog}
+      schema: bronze
+      serverless: true
+      libraries:
+        - glob:
+            include: ../src/pipeline/**
+      configuration:
+        catalog: ${var.catalog}
